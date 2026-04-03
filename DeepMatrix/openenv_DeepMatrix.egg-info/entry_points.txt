@@ -1,0 +1,2 @@
+[console_scripts]
+server = DeepMatrix.server.app:main
