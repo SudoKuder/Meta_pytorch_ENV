@@ -214,17 +214,19 @@ class DeepmatrixEnvironment(Environment):
 
         # ── 4. Cap orders by budget ceiling ──────────────────────────── #
         prices = self._compute_prices(order_qty, t)
+        remaining = self._budget
         for i in range(N):
-            if prices[i] > 0:
-                q_max = int(math.floor(self._budget / prices[i]))
-                order_qty[i] = max(0, min(order_qty[i], q_max))
+          q_max = int(math.floor(remaining / prices[i]))
+          order_qty[i] = max(0, min(order_qty[i], q_max))
+          remaining -= order_qty[i] * prices[i]
             else:
                 order_qty[i] = 0
 
         # ── 5. Place orders; deduct costs ────────────────────────────── #
         purchase_cost: float = float(np.sum(order_qty * prices))
         logistics_cost: float = float(
-            np.sum(order_qty > 0) * LOGISTICS_COST_PER_ORDER
+            np.sum(order_qty * LOGISTICS_COST_PER_UNIT) + \
+                 np.sum(order_qty > 0) * LOGISTICS_COST_BASE_FEE
         )
         holding_cost: float = float(
             np.sum(self._inventory) * HOLDING_COST_PER_UNIT
@@ -319,6 +321,7 @@ class DeepmatrixEnvironment(Environment):
         arrival = np.full(N, self._week, dtype=int)
         # Walk pipeline in order; last write wins (most-recent batch).
         for batch in self._pipeline:
+          if batch.arrival_week < arrival[batch.sku]:
             arrival[batch.sku] = batch.arrival_week
         return arrival
 
@@ -331,6 +334,7 @@ class DeepmatrixEnvironment(Environment):
             [self._week + SHELF_LIVES[i] for i in range(N)], dtype=int
         )
         for batch in self._pipeline:
+          if batch.expiry_week < expiry[batch.sku]:  # keep the earliest
             expiry[batch.sku] = batch.expiry_week
         return expiry
 
