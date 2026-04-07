@@ -83,6 +83,9 @@ DEMAND_MEAN: list[float] = [20.0, 15.0, 30.0, 10.0, 8.0,
 DEMAND_STD_FACTOR: float = 0.3     # σ_demand ≈ factor × mean
 
 
+Price_threshold_for_bulk_discount: int = 100
+bulk_discount: float = 0.92  # 8% discount for orders ≥ threshold
+
 # --------------------------------------------------------------------------- #
 # Helper dataclass for a single in-transit batch                              #
 # --------------------------------------------------------------------------- #
@@ -293,8 +296,8 @@ class DeepmatrixEnvironment(Environment):
         surge = 1.0 + 0.1 * math.sin(2 * math.pi * t / 52)
         prices = np.array(BASE_PRICES) * surge
         # Apply bulk discount where applicable
-        bulk_mask = order_qty >= 100
-        prices[bulk_mask] *= 0.92
+        bulk_mask = order_qty >= Price_threshold_for_bulk_discount
+        prices[bulk_mask] *= bulk_discount
         return prices
 
     def _compute_in_transit(self) -> np.ndarray:
