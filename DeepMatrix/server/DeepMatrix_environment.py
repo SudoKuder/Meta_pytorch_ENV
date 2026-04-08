@@ -36,7 +36,6 @@ Core dynamics (all vectors are length-n, one entry per SKU):
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from typing import Any
 from uuid import uuid4
 
@@ -82,9 +81,8 @@ DEMAND_MEAN: list[float] = [20.0, 15.0, 30.0, 10.0, 8.0,
                              25.0, 18.0, 12.0, 35.0, 6.0]
 DEMAND_STD_FACTOR: float = 0.3     # σ_demand ≈ factor × mean
 
-
 Price_threshold_for_bulk_discount: int = 100
-bulk_discount: float = 0.92  # 8% discount for orders ≥ threshold
+bulk_discount: float = 0.92  # 8% discount for orders >= threshold
 
 # --------------------------------------------------------------------------- #
 # Helper dataclass for a single in-transit batch                              #
@@ -126,7 +124,7 @@ class DeepmatrixEnvironment(Environment):
       7. Build and return the next observation.
 
     Observation fields map directly to the quantities used in:
-        q* = max(0, F_{t+L} + z × σ_{t+L} - I_t - T_t)
+        q* = max(0, F_{t+L} + z * sigma_{t+L} - I_t - T_t)
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
@@ -136,11 +134,12 @@ class DeepmatrixEnvironment(Environment):
     # ------------------------------------------------------------------ #
     def __init__(self) -> None:
         self._rng = np.random.default_rng()
-        self._state: State
-        self._inventory: np.ndarray          # shape (N,)  int
-        self._budget: float
-        self._pipeline: list[_Batch]         # all in-transit batches
-        self._week: int
+        # FIX 1: assign safe defaults so the object is valid before reset()
+        self._state: State = State(episode_id="", step_count=0)
+        self._inventory: np.ndarray = np.zeros(N, dtype=int)
+        self._budget: float = 0.0
+        self._pipeline: list[_Batch] = []
+        self._week: int = 0
         self._reset_count: int = 0
 
     def reset(self) -> DeepmatrixObservation:
@@ -148,9 +147,9 @@ class DeepmatrixEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._week = 0
         self._budget = INITIAL_BUDGET
-        self._pipeline: list[_Batch] = []
+        self._pipeline = []
 
-        # Start with a small random seed stock (0–10 units per SKU).
+        # Start with a small random seed stock (0-10 units per SKU).
         self._inventory = self._rng.integers(0, 11, size=N, dtype=int)
 
         self._reset_count += 1
@@ -172,7 +171,7 @@ class DeepmatrixEnvironment(Environment):
         --------
         1. Arrive batches whose arrival_week == self._week.
         2. Draw and fulfil demand; compute unmet demand.
-        3. Expire units whose expiry_week == self._week → waste W_t.
+        3. Expire units whose expiry_week == self._week -> waste W_t.
         4. Validate & cap the agent's order quantities.
         5. Register new batches in the pipeline; deduct costs from budget.
         6. Advance week counter; return updated observation.
@@ -180,7 +179,7 @@ class DeepmatrixEnvironment(Environment):
         t = self._week
         order_qty = np.array(action.items_to_buy, dtype=int)
 
-        # ── 1. Receive arriving batches ──────────────────────────────── #
+        # -- 1. Receive arriving batches --------------------------------- #
         arrived: np.ndarray = np.zeros(N, dtype=int)
         still_in_transit: list[_Batch] = []
         for batch in self._pipeline:
@@ -191,42 +190,37 @@ class DeepmatrixEnvironment(Environment):
         self._pipeline = still_in_transit
         self._inventory += arrived
 
-        # ── 2. Draw demand and fulfil ────────────────────────────────── #
+        # -- 2. Draw demand and fulfil ----------------------------------- #
         raw_demand: np.ndarray = self._rng.poisson(DEMAND_MEAN).astype(int)
         fulfilled: np.ndarray = np.minimum(raw_demand, self._inventory)
         self._inventory -= fulfilled
 
-        # ── 3. Expire units (W_t) ────────────────────────────────────── #
+        # -- 3. Expire units (W_t) --------------------------------------- #
         waste: np.ndarray = np.zeros(N, dtype=int)
-        # A unit expires when expiry_week == t.
-        # For on-hand inventory we apply a simplified per-SKU expiry check:
-        # units remaining after demand that have been sitting ≥ shelf_life
-        # weeks are considered expired.  Full per-batch tracking would
-        # require a FIFO queue; here we proxy with a probabilistic decay.
-        # (Replace with batch-level FIFO for production accuracy.)
         for i in range(N):
-            # Fraction of inventory that is "aged out" this week
-            # = 1/shelf_life of remaining stock.
             aged = int(math.floor(self._inventory[i] / max(SHELF_LIVES[i], 1)))
             waste[i] = aged
         self._inventory -= waste
         self._inventory = np.maximum(self._inventory, 0)
 
-        # ── 4. Cap orders by budget ceiling ──────────────────────────── #
+        # -- 4. Cap orders by budget ceiling ----------------------------- #
         prices = self._compute_prices(order_qty, t)
         remaining = self._budget
         for i in range(N):
-          q_max = int(math.floor(remaining / prices[i]))
-          order_qty[i] = max(0, min(order_qty[i], q_max))
-          remaining -= order_qty[i] * prices[i]
+            # FIX 2: proper if/else — was an orphaned else with wrong indentation
+            if prices[i] > 0 and remaining >= prices[i]:
+                q_max = int(math.floor(remaining / prices[i]))
+                order_qty[i] = max(0, min(order_qty[i], q_max))
+                remaining -= order_qty[i] * prices[i]
             else:
                 order_qty[i] = 0
 
-        # ── 5. Place orders; deduct costs ────────────────────────────── #
+        # -- 5. Place orders; deduct costs -------------------------------- #
         purchase_cost: float = float(np.sum(order_qty * prices))
+        # FIX 3: LOGISTICS_COST_PER_UNIT and LOGISTICS_COST_BASE_FEE do not
+        # exist; logistics is a flat fee per non-zero order per the docstring.
         logistics_cost: float = float(
-            np.sum(order_qty * LOGISTICS_COST_PER_UNIT) + \
-                 np.sum(order_qty > 0) * LOGISTICS_COST_BASE_FEE
+            np.sum(order_qty > 0) * LOGISTICS_COST_PER_ORDER
         )
         holding_cost: float = float(
             np.sum(self._inventory) * HOLDING_COST_PER_UNIT
@@ -245,12 +239,12 @@ class DeepmatrixEnvironment(Environment):
                 )
                 self._pipeline.append(batch)
 
-        # ── 6. Advance time ──────────────────────────────────────────── #
+        # -- 6. Advance time --------------------------------------------- #
         self._week += 1
         self._state.step_count += 1
 
-        # ── 7. Compute reward (sales revenue − all costs) ────────────── #
-        # Assume selling price = 1.5 × base_price for simplicity.
+        # -- 7. Compute reward (sales revenue - all costs) --------------- #
+        # Assume selling price = 1.5 x base_price for simplicity.
         revenue = float(
             np.sum(fulfilled * np.array(BASE_PRICES) * 1.5)
         )
@@ -289,22 +283,21 @@ class DeepmatrixEnvironment(Environment):
         """
         Compute effective per-unit prices for each SKU this week.
 
-        P(q) = base_price × surge(t)             if q < 100
-        P(q) = base_price × surge(t) × 0.92      if q ≥ 100
+        P(q) = base_price x surge(t)             if q < 100
+        P(q) = base_price x surge(t) x 0.92      if q >= 100
 
-        surge(t) oscillates mildly: 1.0 + 0.1 × sin(2π t / 52)
+        surge(t) oscillates mildly: 1.0 + 0.1 x sin(2*pi*t / 52)
         to simulate seasonal price pressure.
         """
         surge = 1.0 + 0.1 * math.sin(2 * math.pi * t / 52)
         prices = np.array(BASE_PRICES) * surge
-        # Apply bulk discount where applicable
         bulk_mask = order_qty >= Price_threshold_for_bulk_discount
         prices[bulk_mask] *= bulk_discount
         return prices
 
     def _compute_in_transit(self) -> np.ndarray:
         """
-        T_t[i] = Σ q_k for all batches k where arrival_week(k) > current week.
+        T_t[i] = sum of q_k for all batches k where arrival_week(k) > current week.
         """
         t = self._week
         in_transit = np.zeros(N, dtype=int)
@@ -319,33 +312,34 @@ class DeepmatrixEnvironment(Environment):
         (or current week if no batch is in transit for that SKU).
         """
         arrival = np.full(N, self._week, dtype=int)
-        # Walk pipeline in order; last write wins (most-recent batch).
         for batch in self._pipeline:
-          if batch.arrival_week < arrival[batch.sku]:
-            arrival[batch.sku] = batch.arrival_week
+            # FIX 4: was < (never updated since all arrival_weeks > self._week);
+            # must be > to track the latest (most-recently-placed) batch.
+            if batch.arrival_week > arrival[batch.sku]:
+                arrival[batch.sku] = batch.arrival_week
         return arrival
 
     def _compute_expiry_time(self) -> np.ndarray:
         """
-        For each SKU, return the expiry week of the most-recently-placed batch.
+        For each SKU, return the expiry week of the soonest-expiring batch.
         Falls back to current week + shelf_life when no batch is in-flight.
         """
         expiry = np.array(
             [self._week + SHELF_LIVES[i] for i in range(N)], dtype=int
         )
         for batch in self._pipeline:
-          if batch.expiry_week < expiry[batch.sku]:  # keep the earliest
-            expiry[batch.sku] = batch.expiry_week
+            if batch.expiry_week < expiry[batch.sku]:  # keep the earliest
+                expiry[batch.sku] = batch.expiry_week
         return expiry
 
     def _compute_demand_forecast(self) -> tuple[np.ndarray, np.ndarray]:
         """
         F_{t+L}[i]: point forecast of demand at arrival horizon t + L[i].
-        σ_{t+L}[i]: forecast standard deviation at the same horizon.
+        sigma_{t+L}[i]: forecast standard deviation at the same horizon.
 
         Here we use a simple seasonal mean forecast:
-            F = mean[i] × (1 + 0.05 × sin(2π (t + L[i]) / 52))
-            σ = F × DEMAND_STD_FACTOR
+            F = mean[i] x (1 + 0.05 x sin(2*pi*(t + L[i]) / 52))
+            sigma = F x DEMAND_STD_FACTOR
         """
         t = self._week
         forecast = np.array([
