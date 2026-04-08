@@ -7,9 +7,9 @@
 Deepmatrix Environment Implementation.
 
 A multi-item inventory management environment.  At each weekly step the agent
-observes the full supply-chain state and submits order quantities for n SKUs.
+observes the full supply-chain state and submits order quantities for N SKUs.
 
-Core dynamics (all vectors are length-n, one entry per SKU):
+Core dynamics (all vectors are length-N, one entry per SKU):
 
   Inventory update:
       I_t = I_{t-1} + q_{t-L} - D_t - W_t
@@ -31,6 +31,10 @@ Core dynamics (all vectors are length-n, one entry per SKU):
   Budget:
       B_t = B_{t-1} - q × P(q) - logistics_cost(q) - holding_cost(I_t)
       q_max = floor(B_remaining / P(q))         (hard ceiling)
+
+Episode terminates when:
+  - Budget reaches zero, OR
+  - max_weeks (default 52) is reached.
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import DeepmatrixAction, DeepmatrixObservation
+    from .models import DeepmatrixAction, DeepmatrixObservation
 except ImportError:
     from models import DeepmatrixAction, DeepmatrixObservation
 
@@ -64,28 +68,35 @@ SHELF_LIVES: list[int] = [4, 6, 3, 5, 8, 4, 6, 3, 5, 7]
 BASE_PRICES: list[float] = [10.0, 12.0, 8.0, 15.0, 20.0,
                              9.0, 11.0, 14.0, 7.0, 18.0]
 
+# Selling prices (revenue per unit fulfilled)
+SELLING_PRICES: list[float] = [p * 1.5 for p in BASE_PRICES]
+
 # Holding cost per unit per week
 HOLDING_COST_PER_UNIT: float = 0.5
 
 # Logistics cost per batch (flat fee per non-zero order)
 LOGISTICS_COST_PER_ORDER: float = 5.0
 
-# Service-level factor z (95 % fill rate ≈ 1.65)
+# Service-level factor z (95% fill rate ≈ 1.65)
 SERVICE_LEVEL_Z: float = 1.65
 
 # Starting budget
 INITIAL_BUDGET: float = 50_000.0
+
+# Episode length
+MAX_WEEKS: int = 52
 
 # Demand parameters (Poisson mean per SKU per week)
 DEMAND_MEAN: list[float] = [20.0, 15.0, 30.0, 10.0, 8.0,
                              25.0, 18.0, 12.0, 35.0, 6.0]
 DEMAND_STD_FACTOR: float = 0.3     # σ_demand ≈ factor × mean
 
-Price_threshold_for_bulk_discount: int = 100
-bulk_discount: float = 0.92  # 8% discount for orders >= threshold
+PRICE_THRESHOLD_FOR_BULK_DISCOUNT: int = 100
+BULK_DISCOUNT: float = 0.92        # 8% discount for orders ≥ threshold
+
 
 # --------------------------------------------------------------------------- #
-# Helper dataclass for a single in-transit batch                              #
+# Helper dataclass for a single in-transit batch                               #
 # --------------------------------------------------------------------------- #
 class _Batch:
     """Tracks a single ordered batch for one SKU."""
@@ -112,7 +123,7 @@ class _Batch:
 # --------------------------------------------------------------------------- #
 class DeepmatrixEnvironment(Environment):
     """
-    Multi-item inventory management environment.
+    Multi-item inventory management environment (OpenEnv spec).
 
     Each weekly step:
       1. Collect arriving batches (arrival_week == t).
@@ -132,15 +143,20 @@ class DeepmatrixEnvironment(Environment):
     # ------------------------------------------------------------------ #
     # Lifecycle                                                            #
     # ------------------------------------------------------------------ #
-    def __init__(self) -> None:
-        self._rng = np.random.default_rng()
-        # FIX 1: assign safe defaults so the object is valid before reset()
+    def __init__(self, max_weeks: int = MAX_WEEKS, seed: int | None = None) -> None:
+        self._rng = np.random.default_rng(seed)
+        self._max_weeks = max_weeks
+        # Safe defaults before reset()
         self._state: State = State(episode_id="", step_count=0)
         self._inventory: np.ndarray = np.zeros(N, dtype=int)
         self._budget: float = 0.0
         self._pipeline: list[_Batch] = []
         self._week: int = 0
-        self._reset_count: int = 0
+        # Cumulative KPI trackers
+        self._total_demand: int = 0
+        self._total_fulfilled: int = 0
+        self._total_waste: int = 0
+        self._cumulative_profit: float = 0.0
 
     def reset(self) -> DeepmatrixObservation:
         """Reset to a fresh episode with randomised initial inventory."""
@@ -148,11 +164,14 @@ class DeepmatrixEnvironment(Environment):
         self._week = 0
         self._budget = INITIAL_BUDGET
         self._pipeline = []
+        self._total_demand = 0
+        self._total_fulfilled = 0
+        self._total_waste = 0
+        self._cumulative_profit = 0.0
 
-        # Start with a small random seed stock (0-10 units per SKU).
+        # Start with a small random seed stock (0–10 units per SKU).
         self._inventory = self._rng.integers(0, 11, size=N, dtype=int)
 
-        self._reset_count += 1
         return self._build_observation(
             demand=np.zeros(N, dtype=int),
             waste=np.zeros(N, dtype=int),
@@ -169,15 +188,17 @@ class DeepmatrixEnvironment(Environment):
 
         Pipeline
         --------
-        1. Arrive batches whose arrival_week == self._week.
+        1. Arrive batches whose arrival_week <= self._week.
         2. Draw and fulfil demand; compute unmet demand.
-        3. Expire units whose expiry_week == self._week -> waste W_t.
-        4. Validate & cap the agent's order quantities.
+        3. Expire units whose expiry_week <= self._week -> waste W_t.
+        4. Validate & cap the agent's order quantities by budget.
         5. Register new batches in the pipeline; deduct costs from budget.
         6. Advance week counter; return updated observation.
         """
         t = self._week
         order_qty = np.array(action.items_to_buy, dtype=int)
+        # Guard: no negative orders
+        order_qty = np.maximum(order_qty, 0)
 
         # -- 1. Receive arriving batches --------------------------------- #
         arrived: np.ndarray = np.zeros(N, dtype=int)
@@ -196,10 +217,14 @@ class DeepmatrixEnvironment(Environment):
         self._inventory -= fulfilled
 
         # -- 3. Expire units (W_t) --------------------------------------- #
+        # Simple model: units on-hand beyond shelf_life[i] weeks are expired.
+        # We approximate waste as inventory older than shelf_life using a
+        # fraction: waste[i] = floor(inventory[i] / shelf_life[i]).
         waste: np.ndarray = np.zeros(N, dtype=int)
         for i in range(N):
-            aged = int(math.floor(self._inventory[i] / max(SHELF_LIVES[i], 1)))
-            waste[i] = aged
+            if SHELF_LIVES[i] > 0 and self._inventory[i] > 0:
+                aged = int(math.floor(self._inventory[i] / max(SHELF_LIVES[i], 1)))
+                waste[i] = aged
         self._inventory -= waste
         self._inventory = np.maximum(self._inventory, 0)
 
@@ -207,7 +232,6 @@ class DeepmatrixEnvironment(Environment):
         prices = self._compute_prices(order_qty, t)
         remaining = self._budget
         for i in range(N):
-            # FIX 2: proper if/else — was an orphaned else with wrong indentation
             if prices[i] > 0 and remaining >= prices[i]:
                 q_max = int(math.floor(remaining / prices[i]))
                 order_qty[i] = max(0, min(order_qty[i], q_max))
@@ -216,16 +240,17 @@ class DeepmatrixEnvironment(Environment):
                 order_qty[i] = 0
 
         # -- 5. Place orders; deduct costs -------------------------------- #
+        # Re-compute prices after capping (bulk discount may have changed)
+        prices = self._compute_prices(order_qty, t)
         purchase_cost: float = float(np.sum(order_qty * prices))
-        # FIX 3: LOGISTICS_COST_PER_UNIT and LOGISTICS_COST_BASE_FEE do not
-        # exist; logistics is a flat fee per non-zero order per the docstring.
         logistics_cost: float = float(
             np.sum(order_qty > 0) * LOGISTICS_COST_PER_ORDER
         )
         holding_cost: float = float(
             np.sum(self._inventory) * HOLDING_COST_PER_UNIT
         )
-        self._budget -= purchase_cost + logistics_cost + holding_cost
+        total_cost = purchase_cost + logistics_cost + holding_cost
+        self._budget -= total_cost
         self._budget = max(self._budget, 0.0)
 
         for i in range(N):
@@ -243,14 +268,17 @@ class DeepmatrixEnvironment(Environment):
         self._week += 1
         self._state.step_count += 1
 
-        # -- 7. Compute reward (sales revenue - all costs) --------------- #
-        # Assume selling price = 1.5 x base_price for simplicity.
-        revenue = float(
-            np.sum(fulfilled * np.array(BASE_PRICES) * 1.5)
-        )
-        reward = revenue - purchase_cost - logistics_cost - holding_cost
+        # -- 7. Compute reward and KPIs ---------------------------------- #
+        revenue = float(np.sum(fulfilled * np.array(SELLING_PRICES)))
+        reward = revenue - total_cost
 
-        done = self._budget <= 0.0
+        # Update cumulative KPIs
+        self._total_demand += int(np.sum(raw_demand))
+        self._total_fulfilled += int(np.sum(fulfilled))
+        self._total_waste += int(np.sum(waste))
+        self._cumulative_profit += reward
+
+        done = self._budget <= 0.0 or self._week >= self._max_weeks
 
         return self._build_observation(
             demand=fulfilled,
@@ -264,6 +292,7 @@ class DeepmatrixEnvironment(Environment):
                 "logistics_cost": logistics_cost,
                 "holding_cost": holding_cost,
                 "unmet_demand": (raw_demand - fulfilled).tolist(),
+                "order_placed": order_qty.tolist(),
             },
         )
 
@@ -283,22 +312,19 @@ class DeepmatrixEnvironment(Environment):
         """
         Compute effective per-unit prices for each SKU this week.
 
-        P(q) = base_price x surge(t)             if q < 100
-        P(q) = base_price x surge(t) x 0.92      if q >= 100
+        P(q) = base_price × surge(t)              if q < 100
+        P(q) = base_price × surge(t) × 0.92       if q ≥ 100
 
-        surge(t) oscillates mildly: 1.0 + 0.1 x sin(2*pi*t / 52)
-        to simulate seasonal price pressure.
+        surge(t) oscillates mildly: 1.0 + 0.1 × sin(2π × t / 52)
         """
         surge = 1.0 + 0.1 * math.sin(2 * math.pi * t / 52)
-        prices = np.array(BASE_PRICES) * surge
-        bulk_mask = order_qty >= Price_threshold_for_bulk_discount
-        prices[bulk_mask] *= bulk_discount
+        prices = np.array(BASE_PRICES, dtype=float) * surge
+        bulk_mask = order_qty >= PRICE_THRESHOLD_FOR_BULK_DISCOUNT
+        prices[bulk_mask] *= BULK_DISCOUNT
         return prices
 
     def _compute_in_transit(self) -> np.ndarray:
-        """
-        T_t[i] = sum of q_k for all batches k where arrival_week(k) > current week.
-        """
+        """T_t[i] = sum of q_k for all batches k where arrival_week(k) > current week."""
         t = self._week
         in_transit = np.zeros(N, dtype=int)
         for batch in self._pipeline:
@@ -313,8 +339,6 @@ class DeepmatrixEnvironment(Environment):
         """
         arrival = np.full(N, self._week, dtype=int)
         for batch in self._pipeline:
-            # FIX 4: was < (never updated since all arrival_weeks > self._week);
-            # must be > to track the latest (most-recently-placed) batch.
             if batch.arrival_week > arrival[batch.sku]:
                 arrival[batch.sku] = batch.arrival_week
         return arrival
@@ -328,7 +352,7 @@ class DeepmatrixEnvironment(Environment):
             [self._week + SHELF_LIVES[i] for i in range(N)], dtype=int
         )
         for batch in self._pipeline:
-            if batch.expiry_week < expiry[batch.sku]:  # keep the earliest
+            if batch.expiry_week < expiry[batch.sku]:
                 expiry[batch.sku] = batch.expiry_week
         return expiry
 
@@ -337,9 +361,9 @@ class DeepmatrixEnvironment(Environment):
         F_{t+L}[i]: point forecast of demand at arrival horizon t + L[i].
         sigma_{t+L}[i]: forecast standard deviation at the same horizon.
 
-        Here we use a simple seasonal mean forecast:
-            F = mean[i] x (1 + 0.05 x sin(2*pi*(t + L[i]) / 52))
-            sigma = F x DEMAND_STD_FACTOR
+        Simple seasonal mean forecast:
+            F = mean[i] × (1 + 0.05 × sin(2π × (t + L[i]) / 52))
+            sigma = F × DEMAND_STD_FACTOR
         """
         t = self._week
         forecast = np.array([
@@ -367,6 +391,13 @@ class DeepmatrixEnvironment(Environment):
         # (no bulk discount yet); agent uses these to gauge cost.
         prices = self._compute_prices(np.zeros(N, dtype=int), self._week)
 
+        # Service level: avoid division by zero at t=0
+        svc = (
+            self._total_fulfilled / self._total_demand
+            if self._total_demand > 0
+            else 1.0
+        )
+
         return DeepmatrixObservation(
             # Supply pipeline
             inventory=self._inventory.tolist(),
@@ -383,6 +414,10 @@ class DeepmatrixEnvironment(Environment):
             waste=waste.tolist(),
             # Budget
             budget=self._budget,
+            # Cumulative KPIs
+            cumulative_service_level=svc,
+            cumulative_waste_units=self._total_waste,
+            cumulative_profit=self._cumulative_profit,
             # RL fields
             done=done,
             reward=reward,
