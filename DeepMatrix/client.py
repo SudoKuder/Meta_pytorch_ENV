@@ -6,7 +6,7 @@
 
 """Deepmatrix Environment Client."""
 
-from typing import Dict
+from typing import Any
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
@@ -29,22 +29,22 @@ class DeepmatrixEnv(
         >>> # Connect to a running server
         >>> with DeepmatrixEnv(base_url="http://localhost:8000") as client:
         ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
+        ...     print(result.observation.budget)
         ...
-        ...     result = client.step(DeepmatrixAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
+        ...     result = client.step(DeepmatrixAction(items_to_buy=[0] * 10))
+        ...     print(result.observation.cumulative_profit)
 
     Example with Docker:
         >>> # Automatically start container and connect
         >>> client = DeepmatrixEnv.from_docker_image("DeepMatrix-env:latest")
         >>> try:
         ...     result = client.reset()
-        ...     result = client.step(DeepmatrixAction(message="Test"))
+        ...     result = client.step(DeepmatrixAction(items_to_buy=[0] * 10))
         ... finally:
         ...     client.close()
     """
 
-    def _step_payload(self, action: DeepmatrixAction) -> Dict:
+    def _step_payload(self, action: DeepmatrixAction) -> dict[str, Any]:
         """
         Convert DeepmatrixAction to JSON payload for step message.
 
@@ -54,11 +54,9 @@ class DeepmatrixEnv(
         Returns:
             Dictionary representation suitable for JSON encoding
         """
-        return {
-            "message": action.message,
-        }
+        return action.model_dump()
 
-    def _parse_result(self, payload: Dict) -> StepResult[DeepmatrixObservation]:
+    def _parse_result(self, payload: dict[str, Any]) -> StepResult[DeepmatrixObservation]:
         """
         Parse server response into StepResult[DeepmatrixObservation].
 
@@ -69,21 +67,18 @@ class DeepmatrixEnv(
             StepResult with DeepmatrixObservation
         """
         obs_data = payload.get("observation", {})
-        observation = DeepmatrixObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
-        )
+        if not obs_data:
+            # Some server implementations may return the observation directly.
+            obs_data = payload
+        observation = DeepmatrixObservation(**obs_data)
 
         return StepResult(
             observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            reward=payload.get("reward", observation.reward),
+            done=payload.get("done", observation.done),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
+    def _parse_state(self, payload: dict[str, Any]) -> State:
         """
         Parse server response into State object.
 

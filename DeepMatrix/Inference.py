@@ -1,182 +1,93 @@
-"""
-DeepMatrix Inference Script
-===================================
-MANDATORY ENV VARS:
-    API_BASE_URL
-    MODEL_NAME
-    HF_TOKEN / API_KEY
-    IMAGE_NAME
+"""Deterministic baseline evaluation for DeepMatrix contest tasks.
+
+This script runs one baseline agent per task across fixed seeds and writes a
+reproducible score report that can be attached to submissions.
 """
 
-import asyncio
-import os
+from __future__ import annotations
+
 import json
-import textwrap
-from typing import List, Optional
+import os
+import sys
+from pathlib import Path
+from statistics import mean
+from typing import Any
 
-from openai import OpenAI
+# Ensure local task modules can be imported when run as a script.
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# Assuming OpenEnv dynamically provides these or they are imported locally
-from models import DeepmatrixAction
-from server.DeepMatrix_environment import DeepmatrixEnvironment
+from tasks.task1_budget_survival import conservative_agent, run_task as run_task1
+from tasks.task2_service_level import safety_stock_agent, run_task as run_task2
+from tasks.task3_profit_max import adaptive_agent, run_task as run_task3
 
-IMAGE_NAME = os.getenv("IMAGE_NAME") 
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
-TASK_NAME = os.getenv("DEEPMATRIX_TASK", "budget_survival")
-BENCHMARK = os.getenv("DEEPMATRIX_BENCHMARK", "deepmatrix")
-MAX_STEPS = 52  # 52 weeks in a year
-TEMPERATURE = 0.1 # Low temperature for more deterministic, logical math
-MAX_TOKENS = 150
+def parse_seeds(raw: str) -> list[int]:
+    """Parse comma-separated seeds while preserving order."""
+    seeds: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        seeds.append(int(part))
+    return seeds or [42, 123, 999]
 
-SYSTEM_PROMPT = textwrap.dedent(
-    """
-    You are an expert AI Supply Chain Manager. 
-    You manage inventory for 5 SKUs. Each week, you must decide how many units of each SKU to order.
-    Your goal depends on the task, but generally, you want to maintain a high service level without running out of budget or creating too much waste.
-    
-    You must respond ONLY with a valid JSON array of 5 integers representing the quantities to buy for SKUs 0 through 4. 
-    Do not include markdown formatting, explanations, or any other text.
-    Example valid response: [10, 0, 25, 100, 5]
-    """
-).strip()
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+def evaluate_task(task_name: str, runner, agent_fn, seeds: list[int]) -> dict[str, Any]:
+    """Run one task baseline across all seeds and summarize stable metrics."""
+    runs: list[dict[str, Any]] = []
+    for seed in seeds:
+        result = runner(agent_fn, seed=seed)
+        runs.append(result)
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
-    )
+    mean_score = mean(r["score"] for r in runs)
+    mean_budget = mean(r.get("final_budget", 0.0) for r in runs)
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    return {
+        "task": task_name,
+        "seeds": seeds,
+        "mean_score": round(mean_score, 4),
+        "mean_final_budget": round(mean_budget, 2),
+        "runs": runs,
+    }
 
-def build_user_prompt(step: int, obs: dict) -> str:
-    return textwrap.dedent(
-        f"""
-        Week: {step} / 52
-        Current Budget: ${obs.get('budget', 0):.2f}
-        Cumulative Profit: ${obs.get('cumulative_profit', 0):.2f}
-        Service Level: {obs.get('cumulative_service_level', 0):.2f}
-        
-        SKU Status (0 to 4):
-        Inventory on hand: {obs.get('inventory', [])}
-        In Transit: {obs.get('in_transit', [])}
-        Buying Prices: {obs.get('buying_price', [])}
-        Demand Forecast (Mean): {obs.get('demand_forecast', [])}
-        
-        Output your order quantities as a JSON array of 5 integers:
-        """
-    ).strip()
 
-def get_model_action(client: OpenAI, step: int, obs: dict) -> List[int]:
-    user_prompt = build_user_prompt(step, obs)
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        text = (completion.choices[0].message.content or "").strip()
-        
-        # Clean up potential markdown formatting the LLM might add
-        if text.startswith("```json"):
-            text = text.replace("```json", "").replace("```", "").strip()
-            
-        action_list = json.loads(text)
-        
-        # Validate it's a list of 5 integers
-        if isinstance(action_list, list) and len(action_list) == 5:
-            return [int(x) for x in action_list]
-        else:
-            raise ValueError("LLM did not return a list of 5 items.")
-            
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed or returned invalid format: {exc}", flush=True)
-        return [0, 0, 0, 0, 0] # Safe fallback: order nothing if LLM fails
+def main() -> int:
+    seeds = parse_seeds(os.getenv("DEEPMATRIX_BASELINE_SEEDS", "42,123,999"))
+    output_file = os.getenv("DEEPMATRIX_BASELINE_OUTPUT", "baseline_scores.json")
 
-async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    report: dict[str, Any] = {
+        "benchmark": "DeepMatrix",
+        "reproducible": True,
+        "seeds": seeds,
+        "tasks": {
+            "easy": evaluate_task("task1_budget_survival", run_task1, conservative_agent, seeds),
+            "medium": evaluate_task("task2_service_level", run_task2, safety_stock_agent, seeds),
+            "hard": evaluate_task("task3_profit_max", run_task3, adaptive_agent, seeds),
+        },
+    }
 
-    # Initialize your specific environment (Local or Docker based on OpenEnv setup)
-    env = DeepmatrixEnvironment(max_weeks=MAX_STEPS)
+    scores = [
+        report["tasks"]["easy"]["mean_score"],
+        report["tasks"]["medium"]["mean_score"],
+        report["tasks"]["hard"]["mean_score"],
+    ]
+    report["overall_mean_score"] = round(mean(scores), 4)
 
-    rewards: List[float] = []
-    steps_taken = 0
-    score = 0.0
-    success = False
+    out_path = ROOT / output_file
+    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    print("DeepMatrix baseline evaluation complete")
+    print(f"Seeds: {seeds}")
+    print(f"Easy mean score:   {report['tasks']['easy']['mean_score']:.4f}")
+    print(f"Medium mean score: {report['tasks']['medium']['mean_score']:.4f}")
+    print(f"Hard mean score:   {report['tasks']['hard']['mean_score']:.4f}")
+    print(f"Overall mean:      {report['overall_mean_score']:.4f}")
+    print(f"Wrote report:      {out_path}")
 
-    try:
-        # OpenEnv Reset
-        obs = env.reset()
-        
-        # Using dict representation for easier prompt building
-        obs_dict = obs.dict() if hasattr(obs, 'dict') else vars(obs)
+    return 0
 
-        for step in range(1, MAX_STEPS + 1):
-            if obs_dict.get('done', False):
-                break
-
-            # Get action from LLM
-            items_to_buy = get_model_action(client, step, obs_dict)
-            action_str = json.dumps(items_to_buy)
-
-            # Step the environment
-            try:
-                action_obj = DeepmatrixAction(items_to_buy=items_to_buy)
-                obs = env.step(action_obj)
-                obs_dict = obs.dict() if hasattr(obs, 'dict') else vars(obs)
-                error = None
-            except Exception as e:
-                error = str(e)
-                obs_dict['done'] = True # Terminate on env error
-            
-            # Extract reward (using profit change as step reward)
-            current_profit = obs_dict.get('cumulative_profit', 0.0)
-            previous_profit = sum(rewards) if rewards else 0.0
-            step_reward = current_profit - previous_profit
-            
-            done = obs_dict.get('done', False)
-
-            rewards.append(step_reward)
-            steps_taken = step
-
-            log_step(step=step, action=action_str, reward=step_reward, done=done, error=error)
-
-            if done:
-                break
-
-        # Calculate final score based on Budget Survival task logic as an example
-        weeks_survived = steps_taken
-        avg_svc = obs_dict.get('cumulative_service_level', 0.0)
-        base_score = min(weeks_survived / 26.0, 1.0)
-        bonus = 0.1 if avg_svc >= 0.50 else 0.0
-        
-        score = min(base_score + bonus, 1.0)
-        success = score >= 0.8  # Threshold for success
-
-    finally:
-        try:
-            # Add cleanup if using docker container
-            pass 
-        except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", flush=True)
-            
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(main())

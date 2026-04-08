@@ -49,7 +49,7 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from .models import DeepmatrixAction, DeepmatrixObservation
+    from ..models import DeepmatrixAction, DeepmatrixObservation
 except ImportError:
     from models import DeepmatrixAction, DeepmatrixObservation
 

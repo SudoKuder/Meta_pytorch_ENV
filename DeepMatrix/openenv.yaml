@@ -1,81 +1,122 @@
-spec_version: "1.0"
+spec_version: 1
+name: DeepMatrix
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+
+version: "1.0.0"
+description: >
+  A multi-item inventory management simulation with 10 SKUs. Agents optimize
+  order quantities under stochastic demand, lead times, shelf life, dynamic
+  pricing, and a strict budget.
+
+authors:
+  - Meta Platforms, Inc. and affiliates
+
+license: BSD-style (see LICENSE)
+
 environment:
-  name: "DeepMatrix"
-  description: >
-    A realistic multi-item inventory management simulation environment
-    modelling a weekly procurement cycle for 5 SKUs across a supply chain.
-    Agents must balance order quantities against lead times, stochastic demand, 
-    bulk-discount pricing, and a hard budget ceiling. 
-  action_space: "envs.deepmatrix.models.DeepmatrixAction"
-  observation_space: "envs.deepmatrix.models.DeepmatrixObservation"
+  class: DeepMatrix.server.DeepMatrix_environment.DeepmatrixEnvironment
+  action_class: DeepMatrix.models.DeepmatrixAction
+  observation_class: DeepMatrix.models.DeepmatrixObservation
   supports_concurrent_sessions: true
   episode_length: 52
-
-observation_space:
-  budget:
-    type: float
-    description: "Remaining budget after all costs."
-  inventory:
-    type: list[int]
-    length: 5
-    description: "On-hand units per SKU after demand fulfilment and waste."
-  in_transit:
-    type: list[int]
-    length: 5
-    description: "Pipeline units ordered but not yet arrived."
-  buying_price:
-    type: list[float]
-    length: 5
-    description: "Effective per-unit purchase price this week."
-  demand_forecast:
-    type: list[float]
-    length: 5
-    description: "Point forecast of demand."
-  demand_forecast_std:
-    type: list[float]
-    length: 5
-    description: "Forecast standard deviation."
-  cumulative_service_level:
-    type: float
-    range: [0.0, 1.0]
-    description: "Running fill-rate: total fulfilled / total demand."
-  cumulative_waste_units:
-    type: int
-    description: "Total units wasted across all weeks."
-  cumulative_profit:
-    type: float
-    description: "Total profit (revenue - all costs) accumulated."
-  done:
-    type: bool
-    description: "True when episode has terminated."
 
 action_space:
   items_to_buy:
     type: list[int]
-    length: 5
-    range: "[0, ∞)"
-    description: "Order quantities per SKU."
+    length: 10
+    range: "[0, inf)"
+    description: Order quantities per SKU. Values are capped by remaining budget.
+
+observation_space:
+  inventory:
+    type: list[int]
+    length: 10
+    description: On-hand units per SKU.
+  in_transit:
+    type: list[int]
+    length: 10
+    description: Pipeline units ordered but not arrived.
+  demand:
+    type: list[int]
+    length: 10
+    description: Fulfilled demand this week.
+  demand_forecast:
+    type: list[float]
+    length: 10
+    description: Forecast demand at arrival horizon.
+  demand_forecast_std:
+    type: list[float]
+    length: 10
+    description: Forecast standard deviation at arrival horizon.
+  buying_price:
+    type: list[float]
+    length: 10
+    description: Effective per-unit buying price this week.
+  arrival_time:
+    type: list[int]
+    length: 10
+    description: Arrival week for the latest batch per SKU.
+  expiry_time:
+    type: list[int]
+    length: 10
+    description: Earliest expiry week per SKU.
+  waste:
+    type: list[int]
+    length: 10
+    description: Wasted units this week.
+  budget:
+    type: float
+    description: Remaining budget.
+  cumulative_service_level:
+    type: float
+    description: Running fill-rate (fulfilled / demand).
+  cumulative_waste_units:
+    type: int
+    description: Total wasted units.
+  cumulative_profit:
+    type: float
+    description: Cumulative revenue minus all costs.
+  done:
+    type: bool
+    description: Episode termination flag.
+  reward:
+    type: float
+    description: Reward for current step.
+  metadata:
+    type: dict
+    description: Diagnostic metrics.
+
+reward_function: |
+  revenue = sum(fulfilled[i] * selling_price[i])
+  purchase_cost = sum(order_qty[i] * buying_price[i])
+  logistics_cost = count(order_qty[i] > 0) * 5.0
+  holding_cost = sum(inventory[i]) * 0.5
+  reward = revenue - (purchase_cost + logistics_cost + holding_cost)
+
+progress_signals:
+  - cumulative_service_level
+  - cumulative_waste_units
+  - cumulative_profit
+  - budget
 
 tasks:
-  - name: "budget_survival"
-    difficulty: "easy"
-    entry_point: "tasks.task_1_easy:run_task"
-    objective: "Survive (budget > 0) for 26 consecutive weeks."
-    scoring: "base_score = min(weeks_survived / 26, 1.0) + bonus"
+  - id: task1_budget_survival
+    name: Budget Survival
+    difficulty: easy
+    file: tasks/task1_budget_survival.py
+    objective: Keep budget above zero for 26 weeks.
 
-  - name: "service_level_optimizer"
-    difficulty: "medium"
-    entry_point: "tasks.task_2_medium:run_task"
-    objective: "Achieve fill-rate >= 0.80 with waste <= 15% of demand over 52 weeks."
-    scoring: "score = service_score + waste_score + survival_bonus"
+  - id: task2_service_level
+    name: Service Level Optimizer
+    difficulty: medium
+    file: tasks/task2_service_level.py
+    objective: Maintain service level with controlled waste over 52 weeks.
 
-  - name: "profit_maximization"
-    difficulty: "hard"
-    entry_point: "tasks.task_3_hard:run_task"
-    objective: "Maximise 52-week profit while satisfying operational constraints."
-    scoring: "score = profit_score * constraint_factor"
-
-constants:
-  N: 5
-  INITIAL_BUDGET: 12500.0
-  MAX_WEEKS: 52
+  - id: task3_profit_max
+    name: Profit Maximization Under Constraints
+    difficulty: hard
+    file: tasks/task3_profit_max.py
+    objective: Maximize profit while meeting service, waste, and budget constraints.

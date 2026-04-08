@@ -1,0 +1,258 @@
+{
+  "benchmark": "DeepMatrix",
+  "reproducible": true,
+  "seeds": [
+    42,
+    123,
+    999
+  ],
+  "tasks": {
+    "easy": {
+      "task": "task1_budget_survival",
+      "seeds": [
+        42,
+        123,
+        999
+      ],
+      "mean_score": 1.0,
+      "mean_final_budget": 35114.28,
+      "runs": [
+        {
+          "task": "budget_survival",
+          "difficulty": "easy",
+          "score": 1.0,
+          "weeks_survived": 26,
+          "avg_service_level": 0.3263,
+          "final_budget": 35443.03,
+          "metadata": {
+            "target_weeks": 26,
+            "bonus_threshold_service_level": 0.5,
+            "bonus_awarded": false
+          }
+        },
+        {
+          "task": "budget_survival",
+          "difficulty": "easy",
+          "score": 1.0,
+          "weeks_survived": 26,
+          "avg_service_level": 0.3465,
+          "final_budget": 34959.15,
+          "metadata": {
+            "target_weeks": 26,
+            "bonus_threshold_service_level": 0.5,
+            "bonus_awarded": false
+          }
+        },
+        {
+          "task": "budget_survival",
+          "difficulty": "easy",
+          "score": 1.0,
+          "weeks_survived": 26,
+          "avg_service_level": 0.3523,
+          "final_budget": 34940.65,
+          "metadata": {
+            "target_weeks": 26,
+            "bonus_threshold_service_level": 0.5,
+            "bonus_awarded": false
+          }
+        }
+      ]
+    },
+    "medium": {
+      "task": "task2_service_level",
+      "seeds": [
+        42,
+        123,
+        999
+      ],
+      "mean_score": 0.7274,
+      "mean_final_budget": 130.97,
+      "runs": [
+        {
+          "task": "service_level_optimizer",
+          "difficulty": "medium",
+          "score": 0.7265,
+          "service_level": 0.4806,
+          "waste_ratio": 0.0204,
+          "waste_units": 190,
+          "survived": true,
+          "weeks_run": 52,
+          "final_budget": 128.27,
+          "cumulative_profit": 19455.27,
+          "metadata": {
+            "target_service_level": 0.8,
+            "waste_budget_ratio": 0.15,
+            "weights": {
+              "service": 0.6,
+              "waste": 0.25,
+              "survival": 0.15
+            },
+            "component_scores": {
+              "service_score": 0.6008,
+              "waste_score": 0.8639,
+              "survival_bonus": 1.0
+            }
+          }
+        },
+        {
+          "task": "service_level_optimizer",
+          "difficulty": "medium",
+          "score": 0.7236,
+          "service_level": 0.4847,
+          "waste_ratio": 0.024,
+          "waste_units": 223,
+          "survived": true,
+          "weeks_run": 52,
+          "final_budget": 130.53,
+          "cumulative_profit": 18820.03,
+          "metadata": {
+            "target_service_level": 0.8,
+            "waste_budget_ratio": 0.15,
+            "weights": {
+              "service": 0.6,
+              "waste": 0.25,
+              "survival": 0.15
+            },
+            "component_scores": {
+              "service_score": 0.6058,
+              "waste_score": 0.8403,
+              "survival_bonus": 1.0
+            }
+          }
+        },
+        {
+          "task": "service_level_optimizer",
+          "difficulty": "medium",
+          "score": 0.7321,
+          "service_level": 0.4876,
+          "waste_ratio": 0.0202,
+          "waste_units": 188,
+          "survived": true,
+          "weeks_run": 52,
+          "final_budget": 134.12,
+          "cumulative_profit": 19426.62,
+          "metadata": {
+            "target_service_level": 0.8,
+            "waste_budget_ratio": 0.15,
+            "weights": {
+              "service": 0.6,
+              "waste": 0.25,
+              "survival": 0.15
+            },
+            "component_scores": {
+              "service_score": 0.6095,
+              "waste_score": 0.8653,
+              "survival_bonus": 1.0
+            }
+          }
+        }
+      ]
+    },
+    "hard": {
+      "task": "task3_profit_max",
+      "seeds": [
+        42,
+        123,
+        999
+      ],
+      "mean_score": 0.1124,
+      "mean_final_budget": 12504.54,
+      "runs": [
+        {
+          "task": "profit_maximization",
+          "difficulty": "hard",
+          "score": 0.1122,
+          "cumulative_profit": 12144.33,
+          "service_level": 0.3435,
+          "waste_ratio": 0.0182,
+          "waste_units": 169,
+          "final_budget": 12527.33,
+          "weeks_run": 52,
+          "constraints_met": {
+            "service_level": false,
+            "waste_ratio": true,
+            "end_budget": true
+          },
+          "all_constraints_met": false,
+          "metadata": {
+            "thresholds": {
+              "min_service_level": 0.85,
+              "max_waste_ratio": 0.1,
+              "min_end_budget": 12500.0
+            },
+            "component_scores": {
+              "profit_score": 0.1518,
+              "c1_service": 0.4041,
+              "c2_waste": 1.0,
+              "c3_budget": 1.0,
+              "constraint_factor": 0.7393
+            }
+          }
+        },
+        {
+          "task": "profit_maximization",
+          "difficulty": "hard",
+          "score": 0.1114,
+          "cumulative_profit": 11995.3,
+          "service_level": 0.3488,
+          "waste_ratio": 0.0191,
+          "waste_units": 178,
+          "final_budget": 12493.8,
+          "weeks_run": 52,
+          "constraints_met": {
+            "service_level": false,
+            "waste_ratio": true,
+            "end_budget": false
+          },
+          "all_constraints_met": false,
+          "metadata": {
+            "thresholds": {
+              "min_service_level": 0.85,
+              "max_waste_ratio": 0.1,
+              "min_end_budget": 12500.0
+            },
+            "component_scores": {
+              "profit_score": 0.1499,
+              "c1_service": 0.4104,
+              "c2_waste": 1.0,
+              "c3_budget": 0.9995,
+              "constraint_factor": 0.743
+            }
+          }
+        },
+        {
+          "task": "profit_maximization",
+          "difficulty": "hard",
+          "score": 0.1135,
+          "cumulative_profit": 12217.48,
+          "service_level": 0.349,
+          "waste_ratio": 0.0177,
+          "waste_units": 165,
+          "final_budget": 12492.48,
+          "weeks_run": 52,
+          "constraints_met": {
+            "service_level": false,
+            "waste_ratio": true,
+            "end_budget": false
+          },
+          "all_constraints_met": false,
+          "metadata": {
+            "thresholds": {
+              "min_service_level": 0.85,
+              "max_waste_ratio": 0.1,
+              "min_end_budget": 12500.0
+            },
+            "component_scores": {
+              "profit_score": 0.1527,
+              "c1_service": 0.4105,
+              "c2_waste": 1.0,
+              "c3_budget": 0.9994,
+              "constraint_factor": 0.7431
+            }
+          }
+        }
+      ]
+    }
+  },
+  "overall_mean_score": 0.6133
+}

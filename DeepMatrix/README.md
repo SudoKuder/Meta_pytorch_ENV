@@ -1,6 +1,5 @@
 ---
-title: Deepmatrix Environment Server
-emoji: 🎤
+title: DeepMatrix Environment
 colorFrom: indigo
 colorTo: yellow
 sdk: docker
@@ -11,245 +10,163 @@ tags:
   - openenv
 ---
 
-# Deepmatrix Environment
+# DeepMatrix Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+DeepMatrix is a 10-SKU inventory management environment for OpenEnv.
+Each step represents one week of operations. Agents choose order quantities,
+then the environment applies lead times, demand realization, waste/expiry,
+budget constraints, and reward calculation.
+
+This environment models a real-world supply-chain planning task (not a game).
 
 ## Quick Start
 
-The simplest way to use the Deepmatrix environment is through the `DeepmatrixEnv` class:
-
 ```python
 from DeepMatrix import DeepmatrixAction, DeepmatrixEnv
 
-try:
-    # Create environment from Docker image
-    DeepMatrixenv = DeepmatrixEnv.from_docker_image("DeepMatrix-env:latest")
-
-    # Reset
-    result = DeepMatrixenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = DeepMatrixenv.step(DeepmatrixAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    DeepMatrixenv.close()
-```
-
-That's it! The `DeepmatrixEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
-
-## Building the Docker Image
-
-Before using the environment, you need to build the Docker image:
-
-```bash
-# From project root
-docker build -t DeepMatrix-env:latest -f server/Dockerfile .
-```
-
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
-```
-
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**DeepmatrixAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**DeepmatrixObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Deepmatrix environment server running, you can connect directly:
-
-```python
-from DeepMatrix import DeepmatrixEnv
-
-# Connect to existing server
-DeepMatrixenv = DeepmatrixEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = DeepMatrixenv.reset()
-result = DeepMatrixenv.step(DeepmatrixAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `DeepMatrixenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from DeepMatrix import DeepmatrixAction, DeepmatrixEnv
-
-# Connect with context manager (auto-connects and closes)
 with DeepmatrixEnv(base_url="http://localhost:8000") as env:
     result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(DeepmatrixAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
+    print("Initial budget:", result.observation.budget)
+
+    action = DeepmatrixAction(items_to_buy=[0] * 10)
+    result = env.step(action)
+    print("Reward:", result.reward)
+    print("Service level:", result.observation.cumulative_service_level)
 ```
 
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    DeepmatrixEnvironment,  # Pass class, not instance
-    DeepmatrixAction,
-    DeepmatrixObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from DeepMatrix import DeepmatrixAction, DeepmatrixEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with DeepmatrixEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(DeepmatrixAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
+## Run Locally
 
 ```bash
-# From the server directory
-python3 server/DeepMatrix_environment.py
+# From repository root
+uvicorn DeepMatrix.server.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
+## Build Docker Image
 
 ```bash
-uvicorn server.app:app --reload
+# From repository root
+docker build -t deepmatrix-env:latest -f DeepMatrix/server/Dockerfile DeepMatrix
+```
+
+## OpenEnv Manifest
+
+The environment manifest is in `openenv.yaml` and includes:
+- Canonical environment class path
+- Action and observation schema references
+- Task file references for all 3 contest tasks
+
+## Action Space
+
+- `items_to_buy: list[int]` with length `10`
+- One non-negative integer per SKU each week
+- Environment enforces budget caps on effective order quantities
+
+## Observation Space
+
+- `inventory: list[int]` (10)
+- `in_transit: list[int]` (10)
+- `demand: list[int]` (10)
+- `demand_forecast: list[float]` (10)
+- `demand_forecast_std: list[float]` (10)
+- `buying_price: list[float]` (10)
+- `arrival_time: list[int]` (10)
+- `expiry_time: list[int]` (10)
+- `waste: list[int]` (10)
+- `budget: float`
+- `cumulative_service_level: float`
+- `cumulative_waste_units: int`
+- `cumulative_profit: float`
+- `reward: float`
+- `done: bool`
+- `metadata: dict`
+
+## Reward Function
+
+Weekly reward is profit after all operating costs:
+
+`reward = revenue - (purchase_cost + logistics_cost + holding_cost)`
+
+Partial progress signals are always exposed in observations:
+- `cumulative_service_level`
+- `cumulative_waste_units`
+- `cumulative_profit`
+- `budget`
+
+## Tasks
+
+- `tasks/task1_budget_survival.py` (easy)
+- `tasks/task2_service_level.py` (medium)
+- `tasks/task3_profit_max.py` (hard)
+
+Each task script can be run directly:
+
+```bash
+python DeepMatrix/tasks/task1_budget_survival.py
+python DeepMatrix/tasks/task2_service_level.py
+python DeepMatrix/tasks/task3_profit_max.py
+```
+
+All tasks produce normalized scores in `[0.0, 1.0]` via their graders.
+
+## Reproducible Baseline Inference
+
+`Inference.py` runs deterministic baseline agents for all tasks across fixed seeds
+and writes a reproducible report.
+
+```bash
+python DeepMatrix/Inference.py
+```
+
+Optional overrides:
+
+```bash
+DEEPMATRIX_BASELINE_SEEDS=42,123,999 DEEPMATRIX_BASELINE_OUTPUT=baseline_scores.json python DeepMatrix/Inference.py
 ```
 
 ## Project Structure
 
-```
+```text
 DeepMatrix/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # DeepmatrixEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── DeepMatrix_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+├── __init__.py
+├── client.py
+├── models.py
+├── openenv.yaml
+├── pyproject.toml
+├── Inference.py
+├── server/
+│   ├── __init__.py
+│   ├── app.py
+│   ├── DeepMatrix_environment.py
+│   └── Dockerfile
+└── tasks/
+    ├── task1_budget_survival.py
+    ├── task2_service_level.py
+    └── task3_profit_max.py
 ```
+
+## Hugging Face Spaces Deployment
+
+1. Build and test locally:
+
+```bash
+docker build -t deepmatrix-env:latest -f DeepMatrix/server/Dockerfile DeepMatrix
+docker run --rm -p 8000:8000 deepmatrix-env:latest
+```
+
+2. Validate endpoints:
+
+```bash
+curl http://localhost:8000/health
+```
+
+3. Push using OpenEnv:
+
+```bash
+cd DeepMatrix
+openenv push
+```
+
+4. On Spaces, verify:
+- `/health`
+- `/docs`
+- `/web`
