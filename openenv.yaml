@@ -3,7 +3,7 @@ name: DeepMatrix
 type: space
 runtime: fastapi
 app: server.app:app
-port: 8000
+port: 7860
 
 version: "1.0.0"
 description: >
