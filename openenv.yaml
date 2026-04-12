@@ -107,16 +107,19 @@ tasks:
     name: Budget Survival
     difficulty: easy
     file: tasks/task1_budget_survival.py
+    grader: tasks/task1_budget_survival.py
     objective: Keep budget above zero for 26 weeks.
 
   - id: task2_service_level
     name: Service Level Optimizer
     difficulty: medium
     file: tasks/task2_service_level.py
+    grader: tasks/task2_service_level.py
     objective: Maintain service level with controlled waste over 52 weeks.
 
   - id: task3_profit_max
     name: Profit Maximization Under Constraints
     difficulty: hard
     file: tasks/task3_profit_max.py
+    grader: tasks/task3_profit_max.py
     objective: Maximize profit while meeting service, waste, and budget constraints.
