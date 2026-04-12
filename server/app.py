@@ -47,6 +47,49 @@ try:
 except Exception:
     app = None
 
+from fastapi.responses import JSONResponse
+
+@app.get("/baseline")
+async def baseline():
+    """Run default agents on all 3 tasks and return scores."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__) + "/..")
+    try:
+        from tasks.task1_budget_survival import run_task as task1, conservative_agent
+        from tasks.task2_service_level import run_task as task2, safety_stock_agent
+        from tasks.task3_profit_max import run_task as task3, adaptive_agent
+
+        r1 = task1(conservative_agent)
+        r2 = task2(safety_stock_agent)
+        r3 = task3(adaptive_agent)
+
+        return JSONResponse({
+            "tasks": [
+                {"id": "task1_budget_survival", "difficulty": "easy", "score": r1["score"]},
+                {"id": "task2_service_level", "difficulty": "medium", "score": r2["score"]},
+                {"id": "task3_profit_max", "difficulty": "hard", "score": r3["score"]},
+            ],
+            "scores": {
+                "task1_budget_survival": r1["score"],
+                "task2_service_level": r2["score"],
+                "task3_profit_max": r3["score"],
+            }
+        })
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
+
+
+@app.get("/tasks")
+async def list_tasks():
+    """List all available tasks."""
+    return JSONResponse({
+        "tasks": [
+            {"id": "task1_budget_survival", "difficulty": "easy", "objective": "Keep budget above zero for 26 weeks"},
+            {"id": "task2_service_level", "difficulty": "medium", "objective": "Maintain service level >= 0.80"},
+            {"id": "task3_profit_max", "difficulty": "hard", "objective": "Maximize profit under constraints"},
+        ]
+    })
 
 def main(host: str = "0.0.0.0", port: int = 8000):
     """
