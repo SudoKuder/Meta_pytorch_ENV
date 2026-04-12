@@ -68,9 +68,9 @@ def run_task(agent_fn, seed: int = 42) -> dict:
             break
 
     avg_svc = service_levels[-1] if service_levels else 0.0
-    base_score = min(weeks_survived / TARGET_WEEKS, 1.0)
-    bonus = 0.1 if avg_svc >= 0.50 else 0.0
-    score = min(base_score + bonus, 1.0)
+    base_score = min(weeks_survived / TARGET_WEEKS, 0.95)
+    bonus = 0.04 if avg_svc >= 0.50 else 0.0
+    score = max(min(base_score + bonus, 0.999), 0.001)
 
     return {
         "task": TASK_NAME,

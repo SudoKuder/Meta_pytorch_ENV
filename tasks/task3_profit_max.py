@@ -122,6 +122,7 @@ def run_task(agent_fn, seed: int = 42) -> dict:
     constraint_factor = (c1 * c2 * c3) ** (1 / 3)
     profit_score = _sigmoid_profit_score(cum_profit)
     score = profit_score * constraint_factor
+    score = max(min(score, 0.999), 0.001)
 
     constraints_met = {
         "service_level": service_level >= MIN_SERVICE_LEVEL,

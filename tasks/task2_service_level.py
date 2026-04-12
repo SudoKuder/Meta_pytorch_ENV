@@ -80,6 +80,7 @@ def run_task(agent_fn, seed: int = 42) -> dict:
     survival_bonus = 1.0 if obs.budget > 0 else 0.0
 
     score = 0.60 * service_score + 0.25 * waste_score + 0.15 * survival_bonus
+    score = max(min(score, 0.999), 0.001)
 
     return {
         "task": TASK_NAME,
