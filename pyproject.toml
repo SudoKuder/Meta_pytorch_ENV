@@ -34,10 +34,7 @@ dev = [
     "pytest-cov>=4.0.0",
 ]
 
-[project.scripts]
-# Server entry point - enables running via: uv run --project . server
-# or: python -m DeepMatrix.server.app
-server = "DeepMatrix.server.app:main"
+
 
 [tool.setuptools]
 include-package-data = true
