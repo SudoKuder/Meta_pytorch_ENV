@@ -30,27 +30,22 @@ Usage:
 
 try:
     from openenv.core.env_server.http_server import create_app
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
-    ) from e
+    try:
+        from ..models import DeepmatrixAction, DeepmatrixObservation
+        from .DeepMatrix_environment import DeepmatrixEnvironment
+    except (ImportError, ModuleNotFoundError):
+        from models import DeepmatrixAction, DeepmatrixObservation
+        from server.DeepMatrix_environment import DeepmatrixEnvironment
 
-try:
-    from ..models import DeepmatrixAction, DeepmatrixObservation
-    from .DeepMatrix_environment import DeepmatrixEnvironment
-except (ImportError, ModuleNotFoundError):
-    from models import DeepmatrixAction, DeepmatrixObservation
-    from server.DeepMatrix_environment import DeepmatrixEnvironment
-
-
-# Create the app with web interface and README integration
-app = create_app(
-    DeepmatrixEnvironment,
-    DeepmatrixAction,
-    DeepmatrixObservation,
-    env_name="DeepMatrix",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
-)
+    app = create_app(
+        DeepmatrixEnvironment,
+        DeepmatrixAction,
+        DeepmatrixObservation,
+        env_name="DeepMatrix",
+        max_concurrent_envs=1,
+    )
+except Exception:
+    app = None
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):
