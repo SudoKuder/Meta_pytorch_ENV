@@ -10,163 +10,256 @@ tags:
   - openenv
 ---
 
-# DeepMatrix Environment
+# 🏭 DeepMatrix — Multi-SKU Supply Chain Inventory Management
 
-DeepMatrix is a 10-SKU inventory management environment for OpenEnv.
-Each step represents one week of operations. Agents choose order quantities,
-then the environment applies lead times, demand realization, waste/expiry,
-budget constraints, and reward calculation.
+**DeepMatrix** is an [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environment that simulates real-world supply chain inventory management across **10 SKUs over a 52-week horizon**. Agents must balance ordering, waste, service levels, and budget constraints under stochastic Poisson demand — the same trade-offs faced by operations teams at retail and manufacturing companies every day.
 
-This environment models a real-world supply-chain planning task (not a game).
+> 🚀 **Live Space:** [sudokuder-deepmatrix.hf.space](https://sudokuder-deepmatrix.hf.space)
+
+---
+
+## Why DeepMatrix?
+
+Inventory optimization is a multi-billion dollar problem. Poor ordering decisions lead to:
+- **Stockouts** → lost revenue and customer dissatisfaction
+- **Overstocking** → waste from expiry and capital tied up in inventory  
+- **Budget exhaustion** → operational failure
+
+DeepMatrix gives RL agents a realistic, well-instrumented testbed to learn these trade-offs with **dense partial-credit rewards**, **multi-objective constraints**, and **stochastic supply-demand dynamics** — not a toy game.
+
+---
+
+## Environment Dynamics
+
+| Parameter | Value |
+|---|---|
+| SKUs | 10 products with distinct demand profiles |
+| Demand model | Stochastic Poisson with seasonal forecasts |
+| Lead times | 2–4 weeks per SKU |
+| Shelf lives | 3–8 weeks (perishable goods expire) |
+| Bulk discount | 8% off orders ≥ 100 units per SKU |
+| Dynamic pricing | Surge multiplier oscillates seasonally |
+| Starting budget | $50,000 |
+| Episode length | Up to 52 weeks |
+| Termination | Budget depleted OR 52 weeks elapsed |
+
+### Core Dynamics
+
+```
+Inventory update:  I_t = I_{t-1} + q_{t-L} - D_t - W_t
+In-transit:        T_t = Σ q_k  for all batches where arrival_week > t
+Safety-stock:      q* = max(0, F_{t+L} + z·σ_{t+L} - I_t - T_t)
+Pricing:           P(q) = base_price × surge(t) × (0.92 if q ≥ 100 else 1.0)
+Budget update:     B_t = B_{t-1} - q·P(q) - logistics_cost - holding_cost
+```
+---
+
+## Action Space
+
+```python
+class DeepmatrixAction(Action):
+    items_to_buy: list[int]  # Length 10 — order quantity per SKU this week
+                              # Non-negative integers; capped by budget ceiling
+```
+
+---
+
+## Observation Space
+
+| Field | Type | Description |
+|---|---|---|
+| `inventory` | `list[int]` (10) | I_t: on-hand units after demand fulfilment |
+| `in_transit` | `list[int]` (10) | T_t: pipeline units not yet arrived |
+| `demand` | `list[int]` (10) | D_t: fulfilled demand this week |
+| `demand_forecast` | `list[float]` (10) | F_{t+L}: forecast at arrival horizon |
+| `demand_forecast_std` | `list[float]` (10) | σ_{t+L}: forecast uncertainty |
+| `buying_price` | `list[float]` (10) | P(q): effective per-unit price this week |
+| `arrival_time` | `list[int]` (10) | Week the latest batch arrives |
+| `expiry_time` | `list[int]` (10) | Earliest expiry week per SKU |
+| `waste` | `list[int]` (10) | W_t: expired units this week |
+| `budget` | `float` | B_t: remaining budget |
+| `cumulative_service_level` | `float` | Running fill-rate: fulfilled / demand |
+| `cumulative_waste_units` | `int` | Total waste across all weeks |
+| `cumulative_profit` | `float` | Running profit (revenue − all costs) |
+| `reward` | `float` | This week's reward signal |
+| `done` | `bool` | Episode termination flag |
+| `metadata` | `dict` | Per-step diagnostics (revenue, costs, unmet demand) |
+
+---
+
+## Reward Function
+```
+reward = revenue − purchase_cost − logistics_cost − holding_cost
+where:
+revenue        = Σ fulfilled[i] × selling_price[i]
+purchase_cost  = Σ order_qty[i] × buying_price[i]
+logistics_cost = count(order_qty[i] > 0) × 5.0   (flat fee per non-zero order)
+holding_cost   = Σ inventory[i] × 0.5             (per unit per week)
+```
+**Partial progress signals** are always exposed in observations — agents get feedback every step, not just at episode end:
+- `cumulative_service_level`
+- `cumulative_waste_units`  
+- `cumulative_profit`
+- `budget`
+
+---
+
+## Tasks
+
+### Task 1 — Budget Survival (Easy)
+**Objective:** Keep budget above zero for 26 consecutive weeks while fulfilling some demand.
+```
+score = min(weeks_survived / 26, 0.95) + 0.04 bonus if
+avg_service_level ≥ 0.50
+```
+
+Baseline agent: Conservative (orders cheapest 3 SKUs only when inventory is low)
+Baseline score: **0.95**
+
+---
+
+### Task 2 — Service Level Optimizer (Medium)
+**Objective:** Achieve cumulative fill-rate ≥ 0.80 over 52 weeks while keeping waste below 15% of total demand.
+```
+score = 0.60 × service_score + 0.25 × waste_score + 0.15 × survival_bonus
+where:
+service_score  = min(cum_service_level / 0.80, 1.0)
+waste_score    = max(0, 1 - waste_ratio / 0.15)
+survival_bonus = 1.0 if budget > 0 else 0.0
+```
+
+
+Baseline agent: Safety-stock (q* = F_{t+L} + z·σ - I_t - T_t)
+Baseline score: **0.73**
+
+---
+
+### Task 3 — Profit Maximization Under Constraints (Hard)
+**Objective:** Maximize total profit over 52 weeks while satisfying three operational constraints simultaneously:
+1. Cumulative fill-rate ≥ 0.85
+2. Waste ratio ≤ 10% of total demand
+3. End-of-year budget ≥ $12,500 (25% of initial)
+```
+profit_score      = cumulative_profit / $80,000 (benchmark)
+constraint_factor = (c1 × c2 × c3)^(1/3)   (geometric mean, partial credit)
+score             = profit_score × constraint_factor
+```
+
+
+Baseline agent: Adaptive safety-stock with dynamic z and bulk discount exploitation
+Baseline score: **0.11**
+
+---
 
 ## Quick Start
 
 ```python
-from DeepMatrix import DeepmatrixAction, DeepmatrixEnv
+import requests
 
-with DeepmatrixEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print("Initial budget:", result.observation.budget)
+base_url = "https://sudokuder-deepmatrix.hf.space"
 
-    action = DeepmatrixAction(items_to_buy=[0] * 10)
-    result = env.step(action)
-    print("Reward:", result.reward)
-    print("Service level:", result.observation.cumulative_service_level)
+# Reset environment
+obs = requests.post(f"{base_url}/reset", json={}).json()["observation"]
+print(f"Budget: ${obs['budget']:,.0f}")
+print(f"Inventory: {obs['inventory']}")
+
+# Step with safety-stock action
+N = 10
+action = [max(0, int(obs['demand_forecast'][i] - obs['inventory'][i] - obs['in_transit'][i]))
+          for i in range(N)]
+result = requests.post(f"{base_url}/step", json={"action": {"items_to_buy": action}}).json()
+print(f"Reward: {result['observation']['reward']:.2f}")
+print(f"Service level: {result['observation']['cumulative_service_level']:.3f}")
 ```
 
-## Run Locally
+---
+
+## Local Setup
 
 ```bash
-# From repository root
-uvicorn DeepMatrix.server.app:app --reload --host 0.0.0.0 --port 8000
+git clone https://github.com/SudoKuder/Meta_pytorch_ENV
+cd Meta_pytorch_ENV
+uv sync
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
-## Build Docker Image
+Verify:
+```bash
+curl http://localhost:7860/health
+curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d '{}'
+```
+
+---
+
+## Docker
 
 ```bash
-# From repository root
-docker build -t deepmatrix-env:latest -f DeepMatrix/server/Dockerfile DeepMatrix
+docker build -t deepmatrix .
+docker run -p 7860:7860 deepmatrix
+curl http://localhost:7860/health
 ```
 
-## OpenEnv Manifest
+---
 
-The environment manifest is in `openenv.yaml` and includes:
-- Canonical environment class path
-- Action and observation schema references
-- Task file references for all 3 contest tasks
+## Baseline Inference
 
-## Action Space
-
-- `items_to_buy: list[int]` with length `10`
-- One non-negative integer per SKU each week
-- Environment enforces budget caps on effective order quantities
-
-## Observation Space
-
-- `inventory: list[int]` (10)
-- `in_transit: list[int]` (10)
-- `demand: list[int]` (10)
-- `demand_forecast: list[float]` (10)
-- `demand_forecast_std: list[float]` (10)
-- `buying_price: list[float]` (10)
-- `arrival_time: list[int]` (10)
-- `expiry_time: list[int]` (10)
-- `waste: list[int]` (10)
-- `budget: float`
-- `cumulative_service_level: float`
-- `cumulative_waste_units: int`
-- `cumulative_profit: float`
-- `reward: float`
-- `done: bool`
-- `metadata: dict`
-
-## Reward Function
-
-Weekly reward is profit after all operating costs:
-
-`reward = revenue - (purchase_cost + logistics_cost + holding_cost)`
-
-Partial progress signals are always exposed in observations:
-- `cumulative_service_level`
-- `cumulative_waste_units`
-- `cumulative_profit`
-- `budget`
-
-## Tasks
-
-- `tasks/task1_budget_survival.py` (easy)
-- `tasks/task2_service_level.py` (medium)
-- `tasks/task3_profit_max.py` (hard)
-
-Each task script can be run directly:
+Run all 3 tasks with baseline agents:
 
 ```bash
-python DeepMatrix/tasks/task1_budget_survival.py
-python DeepMatrix/tasks/task2_service_level.py
-python DeepMatrix/tasks/task3_profit_max.py
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export HF_TOKEN="your_token"
+export SPACE_URL="https://sudokuder-deepmatrix.hf.space"
+python inference.py
 ```
 
-All tasks produce normalized scores in `[0.0, 1.0]` via their graders.
-
-## Reproducible Baseline Inference
-
-`Inference.py` runs deterministic baseline agents for all tasks across fixed seeds
-and writes a reproducible report.
-
-```bash
-python DeepMatrix/Inference.py
+Expected output:
 ```
-
-Optional overrides:
-
-```bash
-DEEPMATRIX_BASELINE_SEEDS=42,123,999 DEEPMATRIX_BASELINE_OUTPUT=baseline_scores.json python DeepMatrix/Inference.py
+[START] task=budget_survival env=deepmatrix model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action=[...] reward=245.30 done=false error=null
+...
+[END] success=true steps=26 score=0.950 rewards=245.30,...
+[START] task=service_level_optimizer env=deepmatrix model=...
+...
+[END] success=true steps=52 score=0.727 rewards=...
+[START] task=profit_maximization env=deepmatrix model=...
+...
+[END] success=false steps=52 score=0.112 rewards=...
 ```
+---
+## API Endpoints
 
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | Health check |
+| `/reset` | POST | Start new episode |
+| `/step` | POST | Submit order quantities, get observation + reward |
+| `/state` | GET | Current episode metadata |
+| `/schema` | GET | Action and observation schemas |
+| `/tasks` | GET | List all 3 tasks with objectives |
+| `/baseline` | GET | Run all 3 tasks with baseline agents, return scores |
+| `/ws` | WebSocket | Persistent session endpoint |
+| `/docs` | GET | Swagger UI |
+| `/web` | GET | Interactive web interface |
+
+---
 ## Project Structure
-
-```text
-DeepMatrix/
-├── __init__.py
-├── client.py
-├── models.py
-├── openenv.yaml
-├── pyproject.toml
-├── Inference.py
+```
+Meta_pytorch_ENV/
+├── inference.py              # Baseline inference (all 3 tasks)
+├── models.py                 # Pydantic Action/Observation models
+├── openenv.yaml              # OpenEnv manifest
+├── task_definitions.py       # Task registry
+├── Dockerfile
 ├── server/
-│   ├── __init__.py
-│   ├── app.py
-│   ├── DeepMatrix_environment.py
-│   └── Dockerfile
+│   ├── app.py                # FastAPI server + custom endpoints
+│   └── DeepMatrix_environment.py  # Core simulation logic
 └── tasks/
-    ├── task1_budget_survival.py
-    ├── task2_service_level.py
-    └── task3_profit_max.py
+    ├── task1_budget_survival.py   # Easy grader
+    ├── task2_service_level.py     # Medium grader
+    └── task3_profit_max.py        # Hard grader
 ```
 
-## Hugging Face Spaces Deployment
+## License
 
-1. Build and test locally:
-
-```bash
-docker build -t deepmatrix-env:latest -f DeepMatrix/server/Dockerfile DeepMatrix
-docker run --rm -p 8000:8000 deepmatrix-env:latest
-```
-
-2. Validate endpoints:
-
-```bash
-curl http://localhost:8000/health
-```
-
-3. Push using OpenEnv:
-
-```bash
-cd DeepMatrix
-openenv push
-```
-
-4. On Spaces, verify:
-- `/health`
-- `/docs`
-- `/web`
+BSD-style (see LICENSE file). Built on Meta's OpenEnv framework.
