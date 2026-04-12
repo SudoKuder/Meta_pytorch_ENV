@@ -323,79 +323,83 @@ def compute_score(task_key: str, step_records: List[dict[str, Any]]) -> float:
 # --------------------------------------------------------------------------- #
 def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    env    = DeepMatrixHTTPEnv(SPACE_URL)
 
-    history:      List[str]            = []
-    rewards:      List[float]          = []
-    step_records: List[dict[str, Any]] = []
-    steps_taken   = 0
-    success       = False
-    score         = 0.001
+    for task_key in ["task1", "task2", "task3"]:
+        task_name, max_steps, success_threshold = TASK_REGISTRY[task_key]
+        env = DeepMatrixHTTPEnv(SPACE_URL)
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+        history:      List[str]            = []
+        rewards:      List[float]          = []
+        step_records: List[dict[str, Any]] = []
+        steps_taken   = 0
+        success       = False
+        score         = 0.001
 
-    try:
-        result      = env.reset()
-        obs         = _get_obs(result)
-        done        = obs.get("done", False)
-        last_reward = 0.0
+        log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
-        for step in range(1, MAX_STEPS + 1):
-            if done:
-                break
+        try:
+            result      = env.reset()
+            obs         = _get_obs(result)
+            done        = obs.get("done", False)
+            last_reward = 0.0
 
-            action            = get_llm_action(client, step, obs, last_reward, history)
-            error: Optional[str] = None
-            step_reward       = 0.0
+            for step in range(1, max_steps + 1):
+                if done:
+                    break
 
-            try:
-                result      = env.step(action)
-                obs         = _get_obs(result)
-                step_reward = float(obs.get("reward", 0.0) or 0.0)
-                done        = bool(obs.get("done",    False) or False)
-                metadata    = obs.get("metadata", {}) or {}
-            except Exception as exc:
-                error       = str(exc)
-                done        = True
-                metadata    = {}
-                print(f"[DEBUG] env.step() error: {exc}", flush=True)
+                action            = get_llm_action(client, step, obs, last_reward, history)
+                error: Optional[str] = None
+                step_reward       = 0.0
 
-            rewards.append(step_reward)
-            steps_taken = step
-            last_reward = step_reward
+                try:
+                    result      = env.step(action)
+                    obs         = _get_obs(result)
+                    step_reward = float(obs.get("reward", 0.0) or 0.0)
+                    done        = bool(obs.get("done", False) or False)
+                    metadata    = obs.get("metadata", {}) or {}
+                except Exception as exc:
+                    error       = str(exc)
+                    done        = True
+                    metadata    = {}
+                    print(f"[DEBUG] env.step() error: {exc}", flush=True)
 
-            step_records.append({
-                "reward":       step_reward,
-                "budget":       obs.get("budget",        0.0),
-                "demand":       obs.get("demand",        [0] * N),
-                "unmet_demand": metadata.get("unmet_demand", [0] * N),
-            })
+                rewards.append(step_reward)
+                steps_taken = step
+                last_reward = step_reward
 
-            log_step(
-                step=step,
-                action=action,
-                reward=step_reward,
-                done=done,
-                error=error,
-            )
+                step_records.append({
+                    "reward":       step_reward,
+                    "budget":       obs.get("budget",        0.0),
+                    "demand":       obs.get("demand",        [0] * N),
+                    "unmet_demand": metadata.get("unmet_demand", [0] * N),
+                })
 
-            history.append(
-                f"Week {step}: orders={action} "
-                f"reward={step_reward:+.2f} budget=${obs.get('budget', 0):,.0f}"
-            )
+                log_step(
+                    step=step,
+                    action=action,
+                    reward=step_reward,
+                    done=done,
+                    error=error,
+                )
 
-            if done:
-                break
+                history.append(
+                    f"Week {step}: orders={action} "
+                    f"reward={step_reward:+.2f} budget=${obs.get('budget', 0):,.0f}"
+                )
 
-        score   = compute_score(TASK_KEY, step_records)
-        success = score >= SUCCESS_THRESHOLD
+                if done:
+                    break
 
-    except Exception as exc:
-        print(f"[DEBUG] Episode failed: {exc}", flush=True)
+            score   = compute_score(task_key, step_records)
+            success = score >= success_threshold
 
-    finally:
-        env.close()
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        except Exception as exc:
+            print(f"[DEBUG] Episode failed: {exc}", flush=True)
+
+        finally:
+            env.close()
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
 
 if __name__ == "__main__":
     main()
