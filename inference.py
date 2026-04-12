@@ -126,10 +126,10 @@ def log_step(
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -292,11 +292,11 @@ def _fallback_action(obs: dict[str, Any]) -> list[int]:
 # --------------------------------------------------------------------------- #
 def compute_score(task_key: str, step_records: List[dict[str, Any]]) -> float:
     if not step_records:
-        return 0.0
+        return 0.001
 
     if task_key == "task1":
         survived = sum(1 for r in step_records if r.get("budget", 0.0) > 0.0)
-        return round(survived / MAX_STEPS, 4)
+        score = survived / MAX_STEPS
 
     elif task_key == "task2":
         weeks_above = 0
@@ -307,15 +307,15 @@ def compute_score(task_key: str, step_records: List[dict[str, Any]]) -> float:
             fill_rate    = (fulfilled / total_demand) if total_demand > 0 else 1.0
             if fill_rate >= 0.80:
                 weeks_above += 1
-        return round(weeks_above / MAX_STEPS, 4)
+        score = weeks_above / MAX_STEPS
 
     else:  # task3
         total_profit    = sum(r.get("reward", 0.0) for r in step_records)
         max_per_week    = sum(DEMAND_MEAN[i] * SELLING_PRICES[i] for i in range(N))
         theoretical_max = max_per_week * MAX_STEPS
-        if theoretical_max <= 0:
-            return 0.0
-        return round(float(min(max(total_profit / theoretical_max, 0.0), 1.0)), 4)
+        score = total_profit / theoretical_max if theoretical_max > 0 else 0.001
+
+    return round(max(min(score, 0.999), 0.001), 4)
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +330,7 @@ def main() -> None:
     step_records: List[dict[str, Any]] = []
     steps_taken   = 0
     success       = False
+    score         = 0.001
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
@@ -394,8 +395,7 @@ def main() -> None:
 
     finally:
         env.close()
-        log_end(success=success, steps=steps_taken, rewards=rewards)
-
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":
     main()
